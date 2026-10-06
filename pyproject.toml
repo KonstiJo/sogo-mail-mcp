@@ -1,0 +1,9 @@
+[project]
+name = "sogo-mail-mcp"
+version = "0.1.0"
+description = "Lokaler MCP-Server für SOGo-Mail (via IMAP): lesen, suchen, Drafts speichern"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2.0,<2"]
+
+[tool.uv]
+package = false
