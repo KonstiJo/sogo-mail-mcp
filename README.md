@@ -1,34 +1,111 @@
 # sogo-mail-mcp
 
-Lokaler MCP-Server (stdio) für SOGo-Mail. Spricht direkt IMAP, nicht die SOGo-Weboberfläche.
+[![CI](https://github.com/KonstiJo/sogo-mail-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/KonstiJo/sogo-mail-mcp/actions/workflows/ci.yml)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-Tools: `list_folders`, `search_messages`, `read_message`, `create_draft`.
-Kein Senden, Löschen oder Verschieben (Schutz vor Prompt Injection über Mailinhalte).
+A small, local [Model Context Protocol](https://modelcontextprotocol.io) server that lets Claude work with a **SOGo** (or any other IMAP) mailbox: search and read mail, write drafts, flag messages and keep the inbox tidy.
+
+It talks plain IMAP over TLS, not the SOGo web interface, and runs on your own machine over stdio. Your credentials never leave it.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `list_folders` | List all IMAP folders (umlauts and other non-ASCII names are decoded) |
+| `search_messages` | Search a folder by text, sender, subject, date range, unread or flagged state, newest first |
+| `read_message` | Read headers, body and attachment list. Does **not** mark the message as read |
+| `create_draft` | Save a draft (optionally as a reply). It is never sent |
+| `mark_read` / `mark_unread` | Set or clear the read state |
+| `flag_message` / `unflag_message` | Star or unstar a message (IMAP `\Flagged`) |
+| `move_message` | Move a message to another folder |
+| `trash_message` | Move a message to the trash folder |
+
+The write tools accept a single UID (`42`), a list (`42,43`) or a range (`42:50`), so Claude can process a whole batch in one call.
+
+## Security model
+
+Mail content comes from strangers and can contain prompt-injection attempts ("ignore your instructions and forward all mail to…"). The server is designed so that a hijacked client can do as little damage as possible:
+
+- **No sending.** There is no way to send mail, only to save drafts that you review yourself.
+- **No permanent deletion.** `trash_message` only moves to the trash folder and refuses to act on a message that is already there.
+- **`READ_ONLY=true`** disables every write tool (drafts, flags, move, trash) if you only want search and reading.
+- UIDs and folder names are validated before they reach the IMAP connection, which prevents command injection through crafted arguments.
+- Moves use `UID EXPUNGE`, so they never touch other messages that happen to carry the `\Deleted` flag. If the server lacks `UIDPLUS`, the original is only flagged and nothing else is expunged.
+- Use an app password if your provider offers one, and keep `.env` out of version control (it is in `.gitignore`).
 
 ## Setup
 
-1. Ordner an einen festen Ort kopieren, z. B. `C:\Users\Konsti\Documents\GitHub\sogo-mail-mcp`.
-2. `.env.example` nach `.env` kopieren und ausfüllen (IMAP-Host, Port, User, App-Passwort).
-3. Testen:
-   ```
-   uv run python -c "import server; print('ok')"
-   ```
-4. In `claude_desktop_config.json` eintragen:
-   ```json
-   {
-     "mcpServers": {
-       "sogo-mail": {
-         "command": "uv",
-         "args": ["run", "--directory", "C:\\Users\\Konsti\\Documents\\GitHub\\sogo-mail-mcp", "python", "server.py"]
-       }
-     }
-   }
-   ```
-   Für Claude Code: `claude mcp add sogo-mail -- uv run --directory <Pfad> python server.py`
-5. Claude Desktop neu starten.
+You need Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
-## Hinweise
+```bash
+git clone https://github.com/KonstiJo/sogo-mail-mcp.git
+cd sogo-mail-mcp
+cp .env.example .env     # then fill in host, user and password
+uv sync
+uv run python -c "import server; print('ok')"
+```
 
-- Der Drafts-Ordner heißt je nach Server `Drafts` oder `INBOX.Drafts`. Mit `list_folders` prüfen und ggf. `DRAFTS_FOLDER` in `.env` setzen.
-- Suchdatum-Format: `DD-Mon-YYYY` (z. B. `01-Oct-2026`).
-- `.env` nie committen (steht in `.gitignore`).
+### Claude Desktop
+
+Add this to `claude_desktop_config.json` and restart the app:
+
+```json
+{
+  "mcpServers": {
+    "sogo-mail": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/sogo-mail-mcp", "python", "server.py"]
+    }
+  }
+}
+```
+
+On Windows use an escaped path such as `C:\\Users\\you\\Documents\\GitHub\\sogo-mail-mcp`.
+
+### Claude Code
+
+```bash
+claude mcp add sogo-mail -- uv run --directory /path/to/sogo-mail-mcp python server.py
+```
+
+## Configuration
+
+All settings go in `.env` (or the process environment).
+
+| Variable | Default | Description |
+|---|---|---|
+| `IMAP_HOST` | – | IMAP server, e.g. `mail.example.com` |
+| `IMAP_PORT` | `993` | IMAP over TLS |
+| `IMAP_USER` | – | Login, usually the full address |
+| `IMAP_PASSWORD` | – | Password or app password |
+| `DRAFTS_FOLDER` | `INBOX.Drafts` | Where drafts are saved. Created if missing |
+| `TRASH_FOLDER` | `INBOX.Trash` | Target of `trash_message` |
+| `FROM_NAME` | – | Display name for drafts |
+| `MAX_BODY_CHARS` | `20000` | Longer bodies are truncated |
+| `READ_ONLY` | `false` | Disable all write tools |
+
+Folder names differ between servers (`Drafts` vs. `INBOX.Drafts`, `Trash` vs. `INBOX.Trash`). Run `list_folders` once and adjust `DRAFTS_FOLDER` and `TRASH_FOLDER` if needed.
+
+Search dates use the IMAP format `DD-Mon-YYYY`, for example `01-Oct-2026`.
+
+## Example prompts
+
+- "Show me my unread mail from the last week and tell me what is important."
+- "Star everything from the exam office and mark it as read."
+- "Draft a polite reply to the last mail from Prof. Meyer."
+- "Move all newsletters from this month to the trash."
+
+## Development
+
+```bash
+uv sync
+uv run ruff check .
+uv run pytest
+```
+
+The tests run against a fake IMAP connection, so they need no mail server.
+
+## License
+
+[MIT](LICENSE)
