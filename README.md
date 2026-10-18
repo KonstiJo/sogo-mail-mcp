@@ -1,12 +1,27 @@
-# sogo-mail-mcp
+<div align="center">
+
+# 📬 sogo-mail-mcp
+
+**Let Claude read, search and organise your SOGo / IMAP mailbox, without ever being able to send or permanently delete anything.**
 
 [![CI](https://github.com/KonstiJo/sogo-mail-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/KonstiJo/sogo-mail-mcp/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
+[Tools](#tools) · [Security](#security-model) · [Setup](#setup) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting)
+
+</div>
 
 A small, local [Model Context Protocol](https://modelcontextprotocol.io) server that lets Claude work with a **SOGo** (or any other IMAP) mailbox: search and read mail, write drafts, flag messages and keep the inbox tidy.
 
 It talks plain IMAP over TLS, not the SOGo web interface, and runs on your own machine over stdio. Your credentials never leave it.
+
+```mermaid
+flowchart LR
+    C[Claude Desktop / Code] <-- stdio --> S[sogo-mail-mcp<br/>runs locally]
+    S <-- IMAP over TLS --> M[(SOGo / IMAP server)]
+```
 
 ## Tools
 
@@ -105,6 +120,19 @@ uv run pytest
 ```
 
 The tests run against a fake IMAP connection, so they need no mail server.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Login fails | Check `IMAP_HOST` and `IMAP_USER`, and use an app password if 2FA is enabled |
+| Drafts or trash land in the wrong place | Folder names differ per server. Run `list_folders` and set `DRAFTS_FOLDER` / `TRASH_FOLDER` |
+| Write tools are missing | `READ_ONLY=true` is set |
+| Server does not show up in Claude | Restart the app after editing the config and check the absolute project path |
+
+## Contributing
+
+Issues and pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md). Please report security problems privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
