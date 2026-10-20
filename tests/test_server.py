@@ -120,3 +120,123 @@ def test_invalid_uid_never_reaches_server(conn):
     with pytest.raises(ValueError):
         server.read_message("1; x")
     assert conn.calls == []
+
+
+# --- send / permanent delete: opt-in and always confirmed by the user ------- #
+
+class FakeCtx:
+    def __init__(self, action="accept", confirm=True, raises=None):
+        self.action, self.confirm, self.raises = action, confirm, raises
+        self.asked = []
+
+    async def elicit(self, message, schema):
+        self.asked.append(message)
+        if self.raises:
+            raise self.raises
+        data = schema(confirm=self.confirm) if self.action == "accept" else None
+        return type("R", (), {"action": self.action, "data": data})()
+
+
+@pytest.fixture
+def smtp(monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "ALLOW_SEND", True)
+    monkeypatch.setattr(server, "_smtp_send", sent.append)
+    monkeypatch.setattr(server, "_append", lambda *a: None)
+    return sent
+
+
+def _send(ctx, **kw):
+    import asyncio
+    return asyncio.run(server.send_message("a@b.c", "Hi", "Body", ctx, **kw))
+
+
+def test_send_disabled_by_default(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "ALLOW_SEND", False)
+    ctx = FakeCtx()
+    with pytest.raises(PermissionError):
+        _send(ctx)
+    assert smtp == [] and ctx.asked == []
+
+
+def test_send_blocked_in_read_only(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "READ_ONLY", True)
+    with pytest.raises(PermissionError):
+        _send(FakeCtx())
+    assert smtp == []
+
+
+def test_send_after_confirmation(conn, smtp):
+    ctx = FakeCtx()
+    assert "Sent" in _send(ctx)
+    assert len(smtp) == 1 and "a@b.c" in ctx.asked[0] and "Body" in ctx.asked[0]
+
+
+@pytest.mark.parametrize("ctx", [
+    FakeCtx(action="decline"), FakeCtx(action="cancel"), FakeCtx(confirm=False),
+    FakeCtx(raises=RuntimeError("elicitation unsupported")),
+])
+def test_send_refused_without_confirmation(conn, smtp, ctx):
+    with pytest.raises(PermissionError):
+        _send(ctx)
+    assert smtp == []
+
+
+def test_send_rejects_header_injection(conn, smtp):
+    with pytest.raises(ValueError):
+        _send(FakeCtx(), cc="x@y.z\r\nBcc: evil@e.vil")
+    assert smtp == []
+
+
+def _delete(ctx, uid="5"):
+    import asyncio
+    return asyncio.run(server.delete_message_permanently(uid, ctx))
+
+
+class DeleteConn(FakeConn):
+    def uid(self, command, *args):
+        self.calls.append(("uid", command, *args))
+        if command == "FETCH":
+            return "OK", [(b"1 (BODY[HEADER.FIELDS])", b"Subject: Old\r\nFrom: x@y.z\r\n\r\n"), b")"]
+        return "OK", [None]
+
+
+@pytest.fixture
+def dconn(monkeypatch):
+    fake = DeleteConn()
+
+    @contextmanager
+    def fake_imap():
+        yield fake
+
+    monkeypatch.setattr(server, "imap", fake_imap)
+    monkeypatch.setattr(server, "READ_ONLY", False)
+    monkeypatch.setattr(server, "ALLOW_DELETE", True)
+    return fake
+
+
+def test_delete_disabled_by_default(dconn, monkeypatch):
+    monkeypatch.setattr(server, "ALLOW_DELETE", False)
+    with pytest.raises(PermissionError):
+        _delete(FakeCtx())
+    assert dconn.calls == []
+
+
+def test_delete_after_confirmation_expunges_only_given_uid(dconn):
+    ctx = FakeCtx()
+    assert "Permanently deleted 1" in _delete(ctx)
+    assert "Old" in ctx.asked[0]
+    assert ("uid", "EXPUNGE", "5") in dconn.calls
+
+
+def test_delete_refused_without_confirmation(dconn):
+    for ctx in (FakeCtx(action="decline"), FakeCtx(raises=RuntimeError("no elicit"))):
+        with pytest.raises(PermissionError):
+            _delete(ctx)
+    assert not any(c[1] in ("STORE", "EXPUNGE") for c in dconn.calls if c[0] == "uid")
+
+
+def test_delete_requires_uidplus(dconn):
+    dconn.capabilities = ("IMAP4REV1",)
+    with pytest.raises(RuntimeError):
+        _delete(FakeCtx())

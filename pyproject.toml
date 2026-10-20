@@ -1,7 +1,7 @@
 [project]
 name = "sogo-mail-mcp"
-version = "0.2.0"
-description = "Local MCP server for SOGo / IMAP mailboxes: search, read, draft, flag and organise mail from Claude"
+version = "0.3.0"
+description = "Local MCP server for SOGo / IMAP mailboxes: search, read, draft, flag and organise mail from Claude, with confirmed send and delete"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
