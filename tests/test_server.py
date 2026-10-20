@@ -240,3 +240,49 @@ def test_delete_requires_uidplus(dconn):
     dconn.capabilities = ("IMAP4REV1",)
     with pytest.raises(RuntimeError):
         _delete(FakeCtx())
+
+
+# --- fallback: native dialog when the client cannot elicit ------------------ #
+
+@pytest.fixture(autouse=True)
+def no_real_dialog(monkeypatch):
+    """Never pop up a real dialog during tests; default answer is 'No'."""
+    shown = []
+    monkeypatch.setattr(server, "_native_confirm", lambda m: shown.append(m) or False)
+    return shown
+
+
+def test_dialog_fallback_when_client_cannot_elicit(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "_native_confirm", lambda m: True)
+    ctx = FakeCtx(raises=RuntimeError("Method not found"))
+    assert "Sent" in _send(ctx)
+    assert len(smtp) == 1
+
+
+def test_dialog_fallback_decline_sends_nothing(conn, smtp, no_real_dialog):
+    with pytest.raises(PermissionError):
+        _send(FakeCtx(raises=RuntimeError("Method not found")))
+    assert smtp == [] and len(no_real_dialog) == 1 and "a@b.c" in no_real_dialog[0]
+
+
+def test_user_decline_in_elicit_does_not_fall_back_to_dialog(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "_native_confirm", lambda m: True)
+    with pytest.raises(PermissionError):
+        _send(FakeCtx(action="decline"))
+    assert smtp == []
+
+
+def test_elicit_mode_never_uses_dialog(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "CONFIRM_MODE", "elicit")
+    monkeypatch.setattr(server, "_native_confirm", lambda m: True)
+    with pytest.raises(PermissionError):
+        _send(FakeCtx(raises=RuntimeError("Method not found")))
+    assert smtp == []
+
+
+def test_dialog_mode_skips_elicitation(conn, smtp, monkeypatch):
+    monkeypatch.setattr(server, "CONFIRM_MODE", "dialog")
+    monkeypatch.setattr(server, "_native_confirm", lambda m: True)
+    ctx = FakeCtx()
+    assert "Sent" in _send(ctx)
+    assert ctx.asked == []

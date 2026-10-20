@@ -15,12 +15,15 @@ the user, the action is refused (fail closed).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import email
 import imaplib
 import os
 import re
 import smtplib
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from email import policy
@@ -57,6 +60,7 @@ MAX_BODY = int(os.environ.get("MAX_BODY_CHARS", "20000"))
 READ_ONLY = _flag("READ_ONLY")
 ALLOW_SEND = _flag("ALLOW_SEND")
 ALLOW_DELETE = _flag("ALLOW_DELETE")
+CONFIRM_MODE = os.environ.get("CONFIRM_MODE", "auto").strip().lower()  # auto | elicit | dialog
 SMTP_HOST = os.environ.get("SMTP_HOST", "") or HOST
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
 SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "ssl").strip().lower()  # "ssl" or "starttls"
@@ -152,20 +156,60 @@ class _Confirm(BaseModel):
     confirm: bool = Field(description="Tick to confirm this irreversible action")
 
 
+def _native_confirm(message: str) -> bool:
+    """Blocking yes/no dialog shown by the server process itself (outside the model's reach).
+
+    Defaults to "No"; returns False on any error, missing display or after the timeout.
+    """
+    text = message if len(message) <= 1800 else message[:1800] + "\n[...]"
+    title = "sogo-mail-mcp: please confirm"
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST
+            flags = 0x4 | 0x30 | 0x100 | 0x10000 | 0x40000
+            return ctypes.windll.user32.MessageBoxW(0, text, title, flags) == 6
+        if sys.platform == "darwin":
+            script = [
+                "on run argv",
+                'display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Cancel", "Confirm"}'
+                ' default button "Cancel" cancel button "Cancel" with icon caution giving up after 300',
+                "end run",
+            ]
+            cmd = ["osascript"] + [a for line in script for a in ("-e", line)] + [text, title]
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=320)
+            return done.returncode == 0 and "Confirm" in done.stdout and "gave up:true" not in done.stdout
+        done = subprocess.run(
+            ["zenity", "--question", "--title", title, "--text", text, "--default-cancel",
+             "--timeout", "300"],
+            timeout=320,
+        )
+        return done.returncode == 0
+    except Exception:
+        return False
+
+
 async def _confirm_with_user(ctx: Context, message: str) -> None:
     """Ask the human user for explicit confirmation. Refuses unless they accept.
 
-    Fails closed: if the client does not support elicitation, nothing happens.
+    CONFIRM_MODE=auto (default): MCP elicitation, and if the client cannot do that, a native
+    OS dialog. "elicit" / "dialog" force one of the two. Fails closed in every case.
     """
-    try:
-        result = await ctx.elicit(message=message, schema=_Confirm)
-    except Exception as exc:
-        raise PermissionError(
-            "This action needs confirmation from the user, but the client could not ask "
-            f"for it ({exc}). Nothing was done."
-        ) from exc
-    if result.action != "accept" or not result.data or not result.data.confirm:
-        raise PermissionError("The user did not confirm. Nothing was done.")
+    if CONFIRM_MODE in ("auto", "elicit"):
+        try:
+            result = await ctx.elicit(message=message, schema=_Confirm)
+        except Exception as exc:
+            if CONFIRM_MODE == "elicit":
+                raise PermissionError(
+                    f"The client could not ask the user for confirmation ({exc}). Nothing was done."
+                ) from exc
+        else:
+            if result.action != "accept" or not result.data or not result.data.confirm:
+                raise PermissionError("The user did not confirm. Nothing was done.")
+            return
+    if not await asyncio.to_thread(_native_confirm, message):
+        raise PermissionError("The user did not confirm (or no dialog could be shown). Nothing was done.")
 
 
 _ADDR_BAD = re.compile(r"[\r\n\x00]")
