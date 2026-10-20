@@ -78,6 +78,8 @@ Add this to `claude_desktop_config.json` and restart the app:
 
 On Windows use an escaped path such as `C:\\Users\\you\\Documents\\GitHub\\sogo-mail-mcp`.
 
+**macOS:** install uv with `brew install uv`. The config file is `~/Library/Application Support/Claude/claude_desktop_config.json` and paths use normal slashes, e.g. `/Users/you/sogo-mail-mcp`. If Claude Desktop cannot find `uv` because it does not inherit your shell `PATH`, use its full path as `command` (check with `which uv`, typically `/opt/homebrew/bin/uv` on Apple Silicon or `/usr/local/bin/uv` on Intel).
+
 ### Claude Code
 
 ```bash
